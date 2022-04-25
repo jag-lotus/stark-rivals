@@ -2,7 +2,7 @@ import { expect } from 'chai';
 import { starknet } from 'hardhat';
 import { Account, StarknetContract, StarknetContractFactory } from 'hardhat/types/runtime';
 
-import { strToShortStringFelt, test, tryCatch } from '../utils';
+import { getMessageEvents, strToShortStringFelt, test, tryCatch } from '../utils';
 
 describe('Stark Rivals', function () {
   let contractFactory: StarknetContractFactory;
@@ -46,8 +46,8 @@ describe('Stark Rivals', function () {
       });
 
       const receipt = await starknet.getTransactionReceipt(txHash);
-      console.log(receipt.events);
-      expect(1).to.equal(1);
+      const [new_game_session] = getMessageEvents(receipt.events, 'new_game_session');
+      expect(BigInt(new_game_session.data[0])).to.equal(BigInt(0));
     });
   });
 

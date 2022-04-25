@@ -1,4 +1,6 @@
+import { Event } from '@shardlabs/starknet-hardhat-plugin/dist/starknet-types';
 import { expect } from 'chai';
+import { hash } from 'starknet';
 
 export const test = {
   log: (...str: string[]) => console.log('   ', ...str),
@@ -35,3 +37,21 @@ export async function tryCatch(fn: () => Promise<void>) {
     expect.fail('Test failed');
   }
 }
+
+/**
+ * Gets the events emitted by a specific contract
+ * @param {Event[]} events - The events
+ * @param {string} contractAddress - The contract address
+ */
+export const getContractEvents = (events: Event[], contractAddress: string) => {
+  return events.filter(event => event.from_address === contractAddress);
+};
+
+/**
+ * Gets the events matching a specific event name
+ * @param {Event[]} events - The events
+ * @param {string} message - The message
+ */
+export const getMessageEvents = (events: Event[], message: string) => {
+  return events.filter(event => event.keys.includes(hash.getSelectorFromName(message)));
+};
