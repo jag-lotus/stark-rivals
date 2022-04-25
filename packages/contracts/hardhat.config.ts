@@ -5,6 +5,7 @@ import { HardhatUserConfig } from 'hardhat/config';
 const config: HardhatUserConfig = {
   starknet: {
     venv: 'active',
+    network: 'starknet_devnet',
   },
   paths: {
     starknetSources: 'contracts',
@@ -17,13 +18,9 @@ const config: HardhatUserConfig = {
       url: 'hackathon-0.starknet.io',
     },
   },
-  /*
   mocha: {
-    starknetNetwork: 'starknet_devnet',
-    // starknetNetwork: 'starkathon',
-    // starknetNetwork: 'alpha',
+    timeout: '5m',
   },
-  */
 };
 
 export default config;
