@@ -35,11 +35,12 @@ struct Turn:
     member state : felt
     member start_player : felt
     member current_player : felt
-    member player_1_card : felt
-    member player_2_card : felt
+    member player_1_card_index : felt
+    member player_2_card_index : felt
 end
 
 struct GameSession:
+    member id : felt
     member state : felt
     member player_1 : Player
     member player_2 : Player
@@ -162,6 +163,7 @@ func startGame{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr
     _game_sessions.write(
         session_id,
         GameSession(
+        session_id,
         GAME_STATE_WAIT,
         Player(
             caller_address,
@@ -195,6 +197,7 @@ func joinGame{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}
     _game_sessions.write(
         session_id,
         GameSession(
+        game_session.id,
         GAME_STATE_PLAY,
         game_session.player_1,
         Player(
@@ -319,15 +322,9 @@ func playCard{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}
         Card(played_card.id, game_session.turn.number, batteries_hash, 0),
     )
 
-    local player_1_card
-    local player_2_card
-    if player == PLAYER_1:
-        player_1_card = card_index
-        player_2_card = game_session.turn.player_2_card
-    else:
-        player_1_card = game_session.turn.player_1_card
-        player_2_card = card_index
-    end
+    let (player_1_card, player_2_card) = _get_card_indexes_being_played(
+        game_session, player, card_index
+    )
 
     let (local other_player) = _other_player(player)
     local turn_state
@@ -341,6 +338,7 @@ func playCard{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}
     _game_sessions.write(
         session_id,
         GameSession(
+        game_session.id,
         game_session.state,
         game_session.player_1,
         game_session.player_2,
@@ -358,14 +356,45 @@ func playCard{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}
     return ()
 end
 
+# Returns the cards being played this turn
+func _get_card_indexes_being_played{
+    syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr
+}(game_session : GameSession, player : felt, card_index : felt) -> (
+    player_1_card_index : felt, player_2_card_index : felt
+):
+    if player == PLAYER_1:
+        return (card_index, game_session.turn.player_2_card_index)
+    else:
+        return (game_session.turn.player_1_card_index, card_index)
+    end
+end
+
+# Returns the card played this turn by the player
+func _get_played_card{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    game_session : GameSession, player : felt
+) -> (played_card_index : felt, played_card : Card):
+    if player == PLAYER_1:
+        let (played_card) = _player_cards.read(
+            game_session.id, player, game_session.turn.player_1_card_index
+        )
+        return (game_session.turn.player_1_card_index, played_card)
+    else:
+        let (played_card) = _player_cards.read(
+            game_session.id, player, game_session.turn.player_2_card_index
+        )
+        return (game_session.turn.player_2_card_index, played_card)
+    end
+end
+
 # Check batteries and hash
 func _check_hash{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     played_card : Card, batteries : felt, seed : felt
 ) -> ():
-    let (revealed_hash) = hash2(batteries, seed)
+    let (revealed_hash) = hash2{hash_ptr=pedersen_ptr}(batteries, seed)
     with_attr error_message("Stark Rivals: batteries and seed do not match the hash."):
-        assert revealed_hash = CARD_NOT_PLAYED
+        assert revealed_hash = played_card.batteries_hash
     end
+    return ()
 end
 
 # Reveal the batteries to play the turn
@@ -373,48 +402,31 @@ end
 func revealBatteries{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     session_id : felt, batteries : felt, seed : felt
 ) -> ():
-    alloc_locals
     let (caller_address) = get_caller_address()
     let (game_session) = _game_sessions.read(session_id)
     _check_session(game_session, GAME_STATE_PLAY)
     _check_turn(game_session, TURN_STATE_REVEAL)
 
     let (player) = _check_player(game_session, caller_address)
+    let (played_card_index, played_card) = _get_played_card(game_session, player)
+    _check_hash(played_card, batteries, seed)
+    _player_cards.write(
+        session_id,
+        player,
+        played_card_index,
+        Card(
+        played_card.id,
+        played_card.turn_played,
+        played_card.batteries_hash,
+        batteries,
+        ),
+    )
 
-    if game_session.turn.start_player == player:
-        let (played_card) = _player_cards.read(
-            session_id, player, game_session.turn.first_player_card
-        )
-        _check_hash(played_card, batteries, seed)
-        _player_cards.write(
-            session_id,
-            player,
-            Card(
-            played_card.id,
-            played_card.turn_played,
-            played_card.batteries_hash,
-            batteries,
-            ),
-        )
-        _complete_turn(game_session)
-    else:
-        let (played_card) = _player_cards.read(
-            session_id, player, game_session.turn.second_player_card
-        )
-        _check_hash(played_card, batteries, seed)
-        _player_cards.write(
-            session_id,
-            player,
-            Card(
-            played_card.id,
-            played_card.turn_played,
-            played_card.batteries_hash,
-            batteries,
-            ),
-        )
+    if game_session.turn.start_player != player:
         _game_sessions.write(
             session_id,
             GameSession(
+            game_session.id,
             game_session.state,
             game_session.player_1,
             game_session.player_2,
@@ -423,76 +435,78 @@ func revealBatteries{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_che
                 game_session.turn.state,
                 game_session.turn.start_player,
                 game_session.turn.start_player,
-                game_session.turn.start_player_card,
-                game_session.turn.second_player_card,
+                game_session.turn.player_1_card_index,
+                game_session.turn.player_2_card_index,
                 ),
             ),
         )
+    else:
+        _complete_turn(game_session)
     end
     return ()
 end
 
-struct GCard:
+struct INFTCard:
     member lasers : felt
     member rockets : felt
 end
 
+@storage_var
+func card_nft_contract(id : felt) -> (nft_card : INFTCard):
+end
+
+func _fetch_nft_card{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    id : felt
+) -> (nft_card : INFTCard):
+    let (nft_card) = card_nft_contract.read(id)
+    return (nft_card)
+end
+
 func _complete_turn{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
-    session_id : felt, game_session : GameSession
+    game_session : GameSession
 ) -> ():
     alloc_locals
-    let (player_1_played_game_card) = _player_cards.read(
-        session_id, PLAYER_1, game_session.turn.player_1_card
+    let (player_1_played_card) = _player_cards.read(
+        game_session.id, PLAYER_1, game_session.turn.player_1_card_index
     )
-    let (player_2_played_game_card) = _player_cards.read(
-        session_id, PLAYER_2, game_session.turn.player_2_card
+    let (player_2_played_card) = _player_cards.read(
+        game_session.id, PLAYER_2, game_session.turn.player_2_card_index
     )
 
-    let player_1_card = GCard(5, 2)  # TODO fetch from contract
-    let player_2_card = GCard(3, 4)
+    let (player_1_nft_card) = _fetch_nft_card(player_1_played_card.id)
+    let (player_2_nft_card) = _fetch_nft_card(player_2_played_card.id)
 
-    local player_1_damage = player_1_card.lasers * (1 + player_1_played_game_card.batteries)
-    local player_2_damage = player_2_card.lasers * (1 + player_2_played_game_card.batteries)
+    let player_1_damage = player_1_nft_card.lasers * (1 + player_1_played_card.batteries)
+    let player_2_damage = player_2_nft_card.lasers * (1 + player_2_played_card.batteries)
 
     let (winner) = _get_winner(game_session.turn.start_player, player_1_damage, player_2_damage)
     let (next_start_player) = _other_player(game_session.turn.start_player)
 
-    local updated_player_1
-    local updated_player_2
-    if winner == PLAYER_1:
-        updated_player_1 = Player(
-            game_session.player_1.address,
-            game_session.player_1.life_points,
-            game_session.player_1.batteries - player_1_played_game_card.batteries,
-            )
-        updated_player_2 = Player(
-            game_session.player_2.address,
-            game_session.player_2.life_points - player_1_card.rockets,
-            game_session.player_2.batteries - player_2_played_game_card.batteries,
-            )
-    else:
-        updated_player_1 = Player(
-            game_session.player_1.address,
-            game_session.player_1.life_points - player_2_card.rockets,
-            game_session.player_1.batteries - player_1_played_game_card.batteries,
-            )
-        updated_player_2 = Player(
-            game_session.player_2.address,
-            game_session.player_2.life_points,
-            game_session.player_2.batteries - player_2_played_game_card.batteries,
-            )
-    end
+    let (updated_player_1, updated_player_2) = _update_players(
+        game_session,
+        winner,
+        player_1_played_card,
+        player_2_played_card,
+        player_1_nft_card,
+        player_2_nft_card,
+    )
 
     local updated_game_state = GAME_STATE_PLAY
     if game_session.turn.number == LAST_TURN:
         updated_game_state = GAME_STATE_OVER
     end
-    
-    let (
+
+    if game_session.player_1.life_points == 0:
+        updated_game_state = GAME_STATE_OVER
+    end
+    if game_session.player_2.life_points == 0:
+        updated_game_state = GAME_STATE_OVER
+    end
 
     _game_sessions.write(
-        session_id,
+        game_session.id,
         GameSession(
+        game_session.id,
         updated_game_state,
         updated_player_1,
         updated_player_2,
@@ -507,6 +521,60 @@ func _complete_turn{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
         ),
     )
     return ()
+end
+
+# Updates players from turn data
+func _update_players{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    game_session : GameSession,
+    winner : felt,
+    player_1_played_card : Card,
+    player_2_played_card : Card,
+    player_1_nft_card : INFTCard,
+    player_2_nft_card : INFTCard,
+) -> (updated_player_1 : Player, updated_player_2 : Player):
+    if winner == PLAYER_1:
+        let (updated_life) = _value_or_zero(
+            game_session.player_2.life_points - player_1_nft_card.rockets
+        )
+        return (
+            Player(
+            game_session.player_1.address,
+            game_session.player_1.life_points,
+            game_session.player_1.batteries - player_1_played_card.batteries,
+            ),
+            Player(
+            game_session.player_2.address,
+            updated_life,
+            game_session.player_2.batteries - player_2_played_card.batteries,
+            ),
+        )
+    else:
+        let (updated_life) = _value_or_zero(
+            game_session.player_1.life_points - player_2_nft_card.rockets
+        )
+        return (
+            Player(
+            game_session.player_1.address,
+            updated_life,
+            game_session.player_1.batteries - player_1_played_card.batteries,
+            ),
+            Player(
+            game_session.player_2.address,
+            game_session.player_2.life_points,
+            game_session.player_2.batteries - player_2_played_card.batteries,
+            ),
+        )
+    end
+end
+
+func _value_or_zero{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    value : felt
+) -> (value_or_zero : felt):
+    let (in_range) = is_in_range(value, 0, MAX_LIFE_BUFFER)
+    if in_range == 1:
+        return (value)
+    end
+    return (0)
 end
 
 func _get_winner{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
