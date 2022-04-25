@@ -17,11 +17,13 @@ const config: HardhatUserConfig = {
       url: 'hackathon-0.starknet.io',
     },
   },
+  /*
   mocha: {
     starknetNetwork: 'starknet_devnet',
     // starknetNetwork: 'starkathon',
     // starknetNetwork: 'alpha',
   },
+  */
 };
 
 export default config;
